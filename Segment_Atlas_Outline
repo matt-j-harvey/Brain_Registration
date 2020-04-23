@@ -1,0 +1,134 @@
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+from PyQt5.QtCore import *
+import sys
+import imageio
+import numpy as np
+from scipy import ndimage
+import skimage.transform
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib import cm
+import PIL.Image
+from skimage.transform import resize
+
+
+
+#Turn The List Of Region IDs Into Consecutive Integers
+def remap_matrix(matrix):
+    original_shape = np.shape(matrix)
+
+    flat_matrix = np.ndarray.flatten(matrix)
+    flat_matrix = list(flat_matrix)
+
+    matrix_set = set(flat_matrix)
+    matrix_set = list(matrix_set)
+    matrix_set.sort()
+
+    new_matrix = []
+    for item in flat_matrix:
+        new_item = matrix_set.index(item)
+        new_matrix.append(new_item)
+
+    new_matrix = np.reshape(new_matrix, original_shape)
+
+    return new_matrix
+
+
+#Seed Initial Regions - Give any pixel with a value of 0 a unique ID
+def seed_initial_regions(base):
+    rows, columns = np.shape(base)
+    mapping = np.zeros((rows, columns))
+    count = 1
+
+    for row in range(rows):
+        for column in range(columns):
+
+            if base[row][column] == 0:
+                mapping[row][column] = count
+                count += 1
+
+    return mapping
+
+
+#For Each Pixel - Assign It To The Lowest Identity of its Neighbours
+def iterate_through_timestep(mapping):
+    rows, columns = np.shape(mapping)
+    alteration = False
+
+    for row in range(rows):
+        for column in range(columns):
+
+            if mapping[row][column] > 0:
+                neighbour_list = []
+
+                if row-1 >= 0:
+                    neighbour = mapping[row-1][column]
+                    if neighbour > 0:
+                        neighbour_list.append(neighbour)
+
+                if row+1 < (rows - 1):
+                    neighbour = mapping[row+1][column]
+                    if neighbour > 0:
+                        neighbour_list.append(neighbour)
+
+                if column - 1 >= 0:
+                    neighbour = mapping[row][column - 1]
+                    if neighbour > 0:
+                        neighbour_list.append(neighbour)
+
+                if column + 1 < (columns - 1):
+                    neighbour = mapping[row][column + 1]
+                    if neighbour > 0:
+                        neighbour_list.append(neighbour)
+
+                if len(neighbour_list) > 0:
+                    min_region = min(neighbour_list)
+                    if mapping[row][column] == min_region:
+                        pass
+                    else:
+                        mapping[row][column] = min_region
+                        alteration = True
+
+    return mapping, alteration
+
+
+
+def segment_image(atlas_outline):
+
+    print("Mapping")
+    mapping = seed_initial_regions(atlas_outline)
+
+    plt.ion()
+    alteration = True
+    count = 0
+    while alteration:
+        mapping, alteration = iterate_through_timestep(mapping)
+        mapping = remap_matrix(mapping)
+        print(count)
+        plt.imshow(mapping, cmap='hsv')
+        plt.draw()
+        plt.pause(0.00001)
+        plt.clf()
+        count += 1
+
+    np.save("mapping", mapping)
+    plt.imshow(mapping, cmap='tab20c')
+    plt.show()
+    print("Done!")
+
+
+
+
+bounding_width = 750
+bounding_height = 750
+
+atlas_outline_file = r"C:\Users\matth\OneDrive\Pictures\Allen_Brain_Atlas\Atlas_Template_V2.npy"
+atlas_outline = np.load(atlas_outline_file)
+
+plt.imshow(atlas_outline)
+plt.show()
+
+
+segment_image(atlas_outline)
