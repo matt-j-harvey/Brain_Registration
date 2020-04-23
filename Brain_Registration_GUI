@@ -1,0 +1,438 @@
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+from PyQt5.QtCore import *
+import sys
+import imageio
+import numpy as np
+from scipy import ndimage
+import skimage.transform
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib import cm
+import PIL.Image
+from skimage.transform import resize
+from scipy import stats
+
+
+def create_background_array(image_data):
+    background_array = np.zeros((background_height, background_width))
+    background_array[image_y_start:image_y_start + image_height, image_x_start:image_x_start + image_width] = image_data
+    background_array = np.divide(background_array, np.max(background_array))
+    return background_array
+
+
+def load_atlas_array(atlas_boundaries_data, bounding_height, bounding_width):
+
+    #Load Atlas Array
+    atlas_height = np.shape(atlas_boundaries_data)[0]
+    atlas_width  = np.shape(atlas_boundaries_data)[1]
+
+    #Create Bounding Rectangle
+    atlas_bounding_rect = np.zeros((bounding_height, bounding_width))
+
+    #Insert Array Into Binding Rectangle
+    x_start = int((bounding_width  - atlas_width)  / 2)
+    y_start = int((bounding_height - atlas_height) / 2)
+    atlas_bounding_rect[y_start:y_start + atlas_height, x_start:x_start + atlas_width] = atlas_boundaries_data
+
+    return atlas_bounding_rect
+
+
+def transform_atlas():
+    global atlas_array
+    global template_x
+    global template_y
+
+    atlas_array = np.copy(original_atlas_array)
+
+    #Rotate Array
+    atlas_array = ndimage.rotate(input=atlas_array, angle=rotation, reshape=False)
+
+    #Rescale Array
+    atlas_array = resize(atlas_array, (bounding_height, bounding_width))
+
+    # Ensure Template Coords Are Valid
+    template_y = np.clip(template_y, a_min=0, a_max=background_height - bounding_height)
+    template_x = np.clip(template_x, a_min=0, a_max=background_width  - bounding_width)
+
+
+def overlay_images(background_array, atlas_array):
+
+    print("overlaying")
+
+    # Create New Combined Array
+    combined_array = np.copy(background_array)
+    print("combined array")
+
+    # Get Boundary Pixels from Atlas
+    flatlas_array = np.copy(atlas_array)
+    flatlas_array = np.ndarray.flatten(flatlas_array)
+    indicies = np.argwhere(flatlas_array)
+    indicies = np.ndarray.astype(indicies, int)
+
+    # Get Subset of Existing Background
+    print("putting in subset")
+    subset_background = combined_array[template_y:template_y + bounding_height, template_x:template_x + bounding_width]
+
+    #Put The Boundaries Into The Subset
+    data = np.ones(shape=np.shape(indicies))
+    subset_background = np.ndarray.flatten(subset_background)
+    np.put(subset_background, indicies, data)
+    subset_background = np.ndarray.reshape(subset_background, (bounding_height, bounding_width))
+
+    # Put The Subset Back
+    combined_array[template_y:template_y + bounding_height, template_x:template_x + bounding_width] = subset_background
+
+    return combined_array
+
+
+def draw_image(figure_1, canvas_1, figure_2, canvas_2):
+
+    transform_atlas()
+    rebinarise_array()
+
+    anatomy_combined_array  = overlay_images(anatomy_background_array, atlas_array)
+    activity_combined_array = overlay_images(activity_background_array, atlas_array)
+
+    update_figure(figure_1, canvas_1, anatomy_combined_array)
+    update_figure(figure_2, canvas_2, activity_combined_array)
+
+
+
+def update_figure(figure, canvas, image):
+
+    figure.clear()
+
+    axis = figure.add_subplot(111)
+    axis.set_xlim(0.0, np.shape(image)[1])
+    axis.set_ylim(np.shape(image)[1], 0.0)
+    axis.imshow(image)
+    axis.axis('off')
+    axis.get_xaxis().set_visible(False)
+    axis.get_yaxis().set_visible(False)
+
+    figure.tight_layout(pad=0)
+
+    canvas.draw()
+    canvas.update()
+    app.processEvents()
+
+
+
+
+
+def rebinarise_array():
+
+    global atlas_array
+    atlas_array = np.divide(atlas_array, np.max(atlas_array))
+    atlas_array = np.around(atlas_array, decimals=0)
+    atlas_array = np.where(atlas_array >= 0.9, 1, 0)
+    atlas_array = np.ndarray.astype(atlas_array, int)
+
+def majority_3_by_3(array):
+
+    majority_array = np.zeros(np.shape(array))
+
+    window_size = 10
+    half_window = int(window_size / 2)
+
+    image_height = np.shape(array)[0]
+    image_width = np.shape(array)[1]
+
+    print("starting")
+
+    for y in range(image_height):
+        print(" y:", y)
+        for x in range(image_width):
+            top           = y - half_window
+            left          = x - half_window
+            window_height = top + window_size
+            window_width  = left + window_size
+
+            top           = np.clip(top,            a_min=0, a_max=image_height)
+            left          = np.clip(left,           a_min=0, a_max=image_width)
+            window_height = np.clip(window_height,  a_min=0, a_max=image_height)
+            window_width  = np.clip(window_width,   a_min=0, a_max=image_width)
+
+            sample = array[top:window_height, left:window_width]
+            sample = np.ndarray.flatten(sample)
+
+            mode = int(stats.mode(sample)[0][0])
+            majority_array[y,x] = mode
+
+    return majority_array
+
+
+def display_mapping(mapping):
+
+    regions = np.unique(mapping)
+    print("Number of regions", np.shape(regions)[0])
+
+    for region in regions:
+        plt.title(region)
+        display = np.where(mapping == region, 2, 0)
+        display = np.add(display, atlas_array)
+        plt.imshow(display)
+        plt.show()
+
+
+def map_regions():
+    print("Mapping regions")
+
+    #Load The Mapping Array
+    mapping_array = load_atlas_array(atlas_regions_data, original_bounding_height, original_bounding_width)
+
+    #Transform Mapping Array
+    mapping_array = ndimage.rotate(input=mapping_array, angle=rotation, reshape=False)
+    mapping_array = resize(mapping_array, (bounding_height, bounding_width))
+
+    #Rebinarise array
+    mapping_array = np.around(mapping_array, 0)
+
+    print(np.shape(mapping_array))
+    plt.imshow(mapping_array, cmap='flag')
+    plt.show()
+
+    mapping_array = majority_3_by_3(mapping_array)
+    mapping_array = majority_3_by_3(mapping_array)
+
+
+    #Get Mappings In Original Coords
+
+    # Map Regions
+    # Create Background Array
+    background_mapping = np.zeros((background_height, background_width))
+
+    # Put The Template Where It Should Be
+    background_mapping[template_y:template_y + bounding_height, template_x:template_x + bounding_width] = mapping_array
+
+    # Take Just The Bit Around The Picture
+    region_mapping = background_mapping[image_y_start:image_y_start + image_height, image_x_start:image_x_start + image_width]
+
+
+    #Map Boundaries
+    # Create Background Array
+    background_mapping = np.zeros((background_height, background_width))
+
+    # Put The Template Where It Should Be
+    background_mapping[template_y:template_y + bounding_height, template_x:template_x + bounding_width] = atlas_array
+
+    # Take Just The Bit Around The Picture
+    boundary_mapping = background_mapping[image_y_start:image_y_start + image_height, image_x_start:image_x_start + image_width]
+
+    np.save("region_mapping_2.npy", region_mapping)
+    np.save("boundary_mapping_2.npy", boundary_mapping)
+
+    combined_region_mapping = np.add(anatomical_image_data, region_mapping)
+    plt.imshow(combined_region_mapping, cmap='jet')
+    plt.show()
+
+    boundary_mapping = np.multiply(boundary_mapping, 300)
+    combined_boundary_mapping = np.add(anatomical_image_data, boundary_mapping)
+    plt.imshow(combined_boundary_mapping, cmap='jet')
+    plt.show()
+
+
+
+
+
+
+
+
+
+
+class atlas_matching_window(QWidget):
+
+    def __init__(self, parent=None):
+        super(atlas_matching_window, self).__init__(parent)
+
+        #Setup Window
+        self.setWindowTitle("Atlas Matching")
+        self.setGeometry(0,0,1000,500)
+        self.show()
+
+        #Create Figures
+        self.anatomy_figure  = Figure()
+        self.activity_figure = Figure()
+        self.anatomy_canvas  = FigureCanvas(self.anatomy_figure)
+        self.activity_canvas = FigureCanvas(self.activity_figure)
+
+        #Create Buttons
+        self.left_button = QPushButton("Left")
+        self.left_button.clicked.connect(self.move_left)
+
+        self.right_button = QPushButton("Right")
+        self.right_button.clicked.connect(self.move_right)
+
+        self.up_button = QPushButton("Up")
+        self.up_button.clicked.connect(self.move_up)
+
+        self.down_button = QPushButton("Down")
+        self.down_button.clicked.connect(self.move_down)
+
+        self.rotate_clockwise_button = QPushButton("Rotate Clockwise")
+        self.rotate_clockwise_button.clicked.connect(self.rotate_clockwise)
+
+        self.rotate_counterclockwise_button = QPushButton("Rotate Counterclockwise")
+        self.rotate_counterclockwise_button.clicked.connect(self.rotate_counterclockwise)
+
+        self.enlarge_button = QPushButton("Enlarge")
+        self.enlarge_button.clicked.connect(self.enlarge)
+
+        self.shrink_button = QPushButton("Shrink")
+        self.shrink_button.clicked.connect(self.shrink)
+
+        self.map_button = QPushButton("Map Regions")
+        self.map_button.clicked.connect(map_regions)
+
+
+        #Add Labels
+        self.x_label      = QLabel()
+        self.y_label      = QLabel()
+        self.height_label = QLabel()
+        self.width_label  = QLabel()
+        self.angle_label  = QLabel()
+
+        self.y_label.setText("y: " + str(template_y))
+        self.x_label.setText("x: " + str(template_x))
+        self.width_label.setText("Width: " + str(bounding_width))
+        self.height_label.setText("Height: " + str(bounding_height))
+        self.angle_label.setText("Angle: " + str(rotation))
+
+
+        self.layout = QGridLayout()
+        self.setLayout(self.layout)
+
+        self.layout.addWidget(self.anatomy_canvas,                  0,  0,  13, 8)
+        self.layout.addWidget(self.activity_canvas,                 0,  8,  13, 8)
+
+        self.layout.addWidget(self.left_button,                     0,  16, 1,  1)
+        self.layout.addWidget(self.right_button,                    1,  16, 1,  1)
+        self.layout.addWidget(self.up_button,                       2,  16, 1,  1)
+        self.layout.addWidget(self.down_button,                     3,  16, 1,  1)
+        self.layout.addWidget(self.rotate_clockwise_button,         4,  16, 1,  1)
+        self.layout.addWidget(self.rotate_counterclockwise_button,  5,  16, 1,  1)
+        self.layout.addWidget(self.enlarge_button,                  6,  16, 1,  1)
+        self.layout.addWidget(self.shrink_button,                   7,  16, 1,  1)
+
+        self.layout.addWidget(self.x_label,                         8,  16, 1,  1)
+        self.layout.addWidget(self.y_label,                         9,  16, 1,  1)
+        self.layout.addWidget(self.height_label,                    10, 16, 1,  1)
+        self.layout.addWidget(self.width_label,                     11, 16, 1,  1)
+        self.layout.addWidget(self.angle_label,                     12, 16, 1,  1)
+
+        self.layout.addWidget(self.map_button,                      13, 16, 1,  1)
+
+
+
+    def move_left(self):
+        global template_x
+        template_x -= 10
+        self.x_label.setText("x: " + str(template_x))
+        draw_image(self.anatomy_figure, self.anatomy_canvas, self.activity_figure, self.activity_canvas)
+
+
+    def move_right(self):
+        global template_x
+        template_x += 10
+        self.x_label.setText("x: " + str(template_x))
+        draw_image(self.anatomy_figure, self.anatomy_canvas, self.activity_figure, self.activity_canvas)
+
+    def move_up(self):
+        global template_y
+        template_y -= 10
+        self.y_label.setText("y: " + str(template_y))
+        draw_image(self.anatomy_figure, self.anatomy_canvas, self.activity_figure, self.activity_canvas)
+
+    def move_down(self):
+        global template_y
+        template_y += 10
+        self.y_label.setText("y: " + str(template_y))
+        print("button pressed")
+        draw_image(self.anatomy_figure, self.anatomy_canvas, self.activity_figure, self.activity_canvas)
+
+    def rotate_clockwise(self):
+        global rotation
+        rotation -= 2
+        self.angle_label.setText("Angle: " + str(rotation))
+        draw_image(self.anatomy_figure, self.anatomy_canvas, self.activity_figure, self.activity_canvas)
+
+    def rotate_counterclockwise(self):
+        global rotation
+        rotation += 2
+        self.angle_label.setText("Angle: " + str(rotation))
+        draw_image(self.anatomy_figure, self.anatomy_canvas, self.activity_figure, self.activity_canvas)
+
+    def enlarge(self):
+        global bounding_height
+        global bounding_width
+        bounding_height += 10
+        bounding_width += 10
+
+        self.width_label.setText("Width: " + str(bounding_width))
+        self.height_label.setText("Height: " + str(bounding_height))
+        draw_image(self.anatomy_figure, self.anatomy_canvas, self.activity_figure, self.activity_canvas)
+
+    def shrink(self):
+        global bounding_height
+        global bounding_width
+        bounding_height -= 10
+        bounding_width -= 10
+
+        self.width_label.setText("Width: " + str(bounding_width))
+        self.height_label.setText("Height: " + str(bounding_height))
+
+        draw_image(self.anatomy_figure, self.anatomy_canvas, self.activity_figure, self.activity_canvas)
+
+
+
+if __name__ == '__main__':
+
+    app = QApplication(sys.argv)
+
+    #File Locations
+    anatomical_image_file   = "C:/Users/matth/OneDrive/Pictures/Allen_Brain_Atlas/blue_image_example.npy"
+    activity_image_file     = "C:/Users/matth/OneDrive/Pictures/Allen_Brain_Atlas/Combined_Region_Image.npy"
+    atlas_boundaries_file   = "C:/Users/matth/OneDrive/Pictures/Allen_Brain_Atlas/Atlas_Template_V2.npy"
+    atlas_regions_file      = "C:/Users/matth/OneDrive/Pictures/Allen_Brain_Atlas/Allen_Atlas_Mapping.npy"
+
+    #Load These Arrays
+    anatomical_image_data   = np.load(anatomical_image_file)
+    activity_image_data     = np.load(activity_image_file)
+    atlas_boundaries_data   = np.load(atlas_boundaries_file)
+    atlas_regions_data      = np.load(atlas_regions_file)
+
+    #Get Image Properties
+    image_height = np.shape(anatomical_image_data)[0]
+    image_width  = np.shape(anatomical_image_data)[1]
+
+    #Preset Image Dimensions
+    original_bounding_width = 750
+    original_bounding_height = 750
+    image_x_start = 200
+    image_y_start = 200
+    background_width = 1000
+    background_height = 1000
+
+    # Transformation Properties
+    template_y = 160
+    template_x = 170
+    bounding_width = original_bounding_height
+    bounding_height = original_bounding_width
+    rotation = -8
+
+
+    # Create Atlas Array
+    original_atlas_array = load_atlas_array(atlas_boundaries_data, bounding_height, bounding_width)
+    atlas_array = np.copy(original_atlas_array)
+
+
+    # Create Background Array
+    anatomy_background_array  = create_background_array(anatomical_image_data)
+    activity_background_array = create_background_array(activity_image_data)
+
+
+    window_instance = atlas_matching_window()
+
+    sys.exit(app.exec_())vis
